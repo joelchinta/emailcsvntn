@@ -387,7 +387,7 @@ class EmailProcessor:
                 },
                 date_property: {
                     "date": {
-                        "start": entry['order_date'],
+                        "start": entry['order_date'] if entry['order_date'] and entry['order_date'].strip() else datetime.now().strftime('%Y-%m-%d'),
                         "end": None,
                         "time_zone": None
                     }
