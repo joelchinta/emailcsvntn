@@ -412,7 +412,12 @@ class EmailProcessor:
             print(f"Deleted email: {msg_id}")
             
         except HttpError as error:
-            print(f"Email deletion error: {error}")
+            # Check if it's a permissions error
+            if error.resp.status == 403:
+                print(f"Warning: Cannot delete email (insufficient permissions). Email will remain in inbox.")
+                print(f"Email ID: {msg_id}")
+            else:
+                print(f"Email deletion error: {error}")
     
     def send_alert_email(self, missing_reports: List[str]):
         """Send alert email for missing reports"""
