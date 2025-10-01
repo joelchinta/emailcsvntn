@@ -1,0 +1,63 @@
+name: Email to Notion Processor
+
+on:
+  repository_dispatch:
+    types: [process_emails]
+  workflow_dispatch:
+
+jobs:
+  process-emails:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      
+      - name: Run email processor
+        env:
+          # Gmail OAuth Configuration
+          GMAIL_CLIENT_ID: ${{ secrets.GMAIL_CLIENT_ID }}
+          GMAIL_CLIENT_SECRET: ${{ secrets.GMAIL_CLIENT_SECRET }}
+          GMAIL_REFRESH_TOKEN: ${{ secrets.GMAIL_REFRESH_TOKEN }}
+          GMAIL_ACCESS_TOKEN: ${{ secrets.GMAIL_ACCESS_TOKEN }}
+          
+          # Email Search Queries
+          EMAIL1_SEARCH_QUERY: ${{ secrets.EMAIL1_SEARCH_QUERY }}
+          EMAIL2_SEARCH_QUERY: ${{ secrets.EMAIL2_SEARCH_QUERY }}
+          
+          # CSV1 Configuration (Link in Email)
+          CSV1_SOURCE_NAME: ${{ secrets.CSV1_SOURCE_NAME }}
+          CSV1_AMOUNT_FIELD: ${{ secrets.CSV1_AMOUNT_FIELD }}
+          CSV1_ID_FIELD: ${{ secrets.CSV1_ID_FIELD }}
+          CSV1_DATE_FIELD: ${{ secrets.CSV1_DATE_FIELD }}
+          
+          # CSV2 Configuration (Attachment)
+          CSV2_SOURCE_NAME: ${{ secrets.CSV2_SOURCE_NAME }}
+          CSV2_SKIP_ROWS: ${{ secrets.CSV2_SKIP_ROWS }}
+          CSV2_AMOUNT_FIELD: ${{ secrets.CSV2_AMOUNT_FIELD }}
+          CSV2_ID_FIELD: ${{ secrets.CSV2_ID_FIELD }}
+          CSV2_DATE_FIELD: ${{ secrets.CSV2_DATE_FIELD }}
+          
+          # Notion Configuration
+          NOTION_API_KEY: ${{ secrets.NOTION_API_KEY }}
+          NOTION_DATABASE_ID: ${{ secrets.NOTION_DATABASE_ID }}
+          NOTION_SOURCE_PROPERTY: ${{ secrets.NOTION_SOURCE_PROPERTY }}
+          NOTION_AMOUNT_PROPERTY: ${{ secrets.NOTION_AMOUNT_PROPERTY }}
+          NOTION_ID_PROPERTY: ${{ secrets.NOTION_ID_PROPERTY }}
+          NOTION_DATE_PROPERTY: ${{ secrets.NOTION_DATE_PROPERTY }}
+          NOTION_CHECKBOX_PROPERTY: ${{ secrets.NOTION_CHECKBOX_PROPERTY }}
+          
+          # Alert Configuration
+          ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+        run: |
+          python process_emails.py
