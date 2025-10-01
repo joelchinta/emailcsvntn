@@ -124,31 +124,75 @@ class EmailProcessor:
         """Extract CSV link from email body"""
         try:
             parts = message.get('payload', {}).get('parts', [])
-            body = ''
+            body_html = ''
+            body_text = ''
             
+            def extract_body(part):
+                nonlocal body_html, body_text
+                mime_type = part.get('mimeType', '')
+                
+                if mime_type == 'text/html':
+                    data = part.get('body', {}).get('data', '')
+                    if data:
+                        body_html += base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                elif mime_type == 'text/plain':
+                    data = part.get('body', {}).get('data', '')
+                    if data:
+                        body_text += base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                
+                # Recursively check sub-parts
+                if 'parts' in part:
+                    for subpart in part['parts']:
+                        extract_body(subpart)
+            
+            # Extract all body content
             for part in parts:
-                if part.get('mimeType') == 'text/plain':
-                    data = part.get('body', {}).get('data', '')
-                    body = base64.urlsafe_b64decode(data).decode('utf-8')
-                    break
-                elif part.get('mimeType') == 'text/html':
-                    data = part.get('body', {}).get('data', '')
-                    body = base64.urlsafe_b64decode(data).decode('utf-8')
+                extract_body(part)
             
-            if not body:
+            # If no parts, try direct body
+            if not body_html and not body_text:
                 data = message.get('payload', {}).get('body', {}).get('data', '')
                 if data:
-                    body = base64.urlsafe_b64decode(data).decode('utf-8')
+                    decoded = base64.urlsafe_b64decode(data).decode('utf-8', errors='ignore')
+                    # Check if it's HTML
+                    if '<html' in decoded.lower() or '<a ' in decoded.lower():
+                        body_html = decoded
+                    else:
+                        body_text = decoded
             
-            # Find CSV links
-            csv_links = re.findall(r'https?://[^\s<>"]+\.csv', body, re.IGNORECASE)
-            if csv_links:
-                return csv_links[0]
+            # Try HTML first (most reliable for embedded links)
+            if body_html:
+                # Extract href attributes from <a> tags
+                href_pattern = r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>'
+                hrefs = re.findall(href_pattern, body_html, re.IGNORECASE)
+                
+                # Look for CSV or S3 links
+                for href in hrefs:
+                    if '.csv' in href.lower() or 's3.amazonaws.com' in href.lower():
+                        return href
+                
+                # If no CSV-specific links, try general URL extraction from HTML
+                url_pattern = r'https?://[^\s<>"\']+(?:\.csv|s3\.amazonaws\.com[^\s<>"\']*)'
+                urls = re.findall(url_pattern, body_html, re.IGNORECASE)
+                if urls:
+                    return urls[0]
             
-            links = re.findall(r'https?://[^\s<>"]+', body)
-            for link in links:
-                if 'csv' in link.lower() or 'export' in link.lower():
-                    return link
+            # Try plain text as fallback
+            if body_text:
+                csv_links = re.findall(r'https?://[^\s<>"]+\.csv[^\s<>"]*', body_text, re.IGNORECASE)
+                if csv_links:
+                    return csv_links[0]
+                
+                # Look for S3 links even without .csv extension
+                s3_links = re.findall(r'https?://[^\s<>"]*s3\.amazonaws\.com[^\s<>"]+', body_text, re.IGNORECASE)
+                if s3_links:
+                    return s3_links[0]
+                
+                # Generic links as last resort
+                links = re.findall(r'https?://[^\s<>"]+', body_text)
+                for link in links:
+                    if 'csv' in link.lower() or 'export' in link.lower():
+                        return link
             
             return None
             
@@ -159,10 +203,20 @@ class EmailProcessor:
     def download_csv(self, url: str) -> Optional[str]:
         """Download CSV from URL"""
         try:
-            response = requests.get(url, timeout=30)
+            # Some URLs may require authentication or have expired
+            # Try with a timeout and handle various HTTP errors
+            response = requests.get(url, timeout=30, allow_redirects=True)
             response.raise_for_status()
             return response.text
             
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 403:
+                print(f"CSV download error: Access forbidden (403). URL may have expired or requires authentication.")
+            elif e.response.status_code == 404:
+                print(f"CSV download error: File not found (404)")
+            else:
+                print(f"CSV download error: HTTP {e.response.status_code}")
+            return None
         except Exception as error:
             print(f"CSV download error: {error}")
             return None
@@ -368,12 +422,13 @@ class EmailProcessor:
             
         try:
             missing = ' and '.join(missing_reports)
-            message_text = f"""Subject: Report Processing Alert
-
-Reports not found: {missing}
-
-Automated processing could not complete due to missing email reports.
-            """.strip()
+            
+            # Create RFC 2822 compliant message
+            message_text = f"To: {self.alert_email}\r\n"
+            message_text += f"Subject: Report Processing Alert\r\n"
+            message_text += f"\r\n"
+            message_text += f"Reports not found: {missing}\n\n"
+            message_text += f"Automated processing could not complete due to missing email reports.\n"
             
             message = {
                 'raw': base64.urlsafe_b64encode(message_text.encode()).decode()
@@ -387,6 +442,8 @@ Automated processing could not complete due to missing email reports.
             print(f"Alert sent for missing: {missing}")
             
         except HttpError as error:
+            print(f"Alert email error: {error}")
+        except Exception as error:
             print(f"Alert email error: {error}")
     
     def process(self):
