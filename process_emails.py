@@ -234,11 +234,22 @@ class EmailProcessor:
         
         for row in reader:
             try:
+                order_id = row.get(id_field, '').strip()
+                date_str = row.get(date_field, '').strip()
+                
+                # Skip rows with empty order ID or date (likely total/summary rows)
+                if not order_id or not date_str:
+                    continue
+                
+                # Skip rows where order_id is not a number (like "Total", "Summary", etc)
+                if not order_id.replace('.', '', 1).isdigit():
+                    continue
+                
                 entry = {
                     'source': source_name,
                     'order_amount': float(row.get(amount_field, 0)),
-                    'order_id': row.get(id_field, ''),
-                    'order_date': self._parse_date(row.get(date_field, ''))
+                    'order_id': order_id,
+                    'order_date': self._parse_date(date_str)
                 }
                 entries.append(entry)
                 
