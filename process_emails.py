@@ -413,22 +413,31 @@ class EmailProcessor:
         except Exception as e:
             print(f"Notion update error: {e}")
     
-    def delete_email(self, msg_id: str):
-        """Delete email from Gmail"""
+    def archive_or_delete_email(self, msg_id: str):
+        """Archive email from Gmail inbox (or trash as fallback)"""
         try:
-            self.gmail_service.users().messages().delete(
+            # Try to archive (remove from inbox) - requires gmail.modify scope
+            self.gmail_service.users().messages().modify(
                 userId='me',
-                id=msg_id
+                id=msg_id,
+                body={'removeLabelIds': ['INBOX']}
             ).execute()
-            print(f"Deleted email: {msg_id}")
+            print(f"Archived email: {msg_id}")
             
         except HttpError as error:
-            # Check if it's a permissions error
+            # If archive fails, try moving to trash
             if error.resp.status == 403:
-                print(f"Warning: Cannot delete email (insufficient permissions). Email will remain in inbox.")
-                print(f"Email ID: {msg_id}")
+                try:
+                    self.gmail_service.users().messages().trash(
+                        userId='me',
+                        id=msg_id
+                    ).execute()
+                    print(f"Moved email to trash: {msg_id}")
+                except HttpError as trash_error:
+                    print(f"Warning: Cannot archive or trash email. Email will remain in inbox.")
+                    print(f"Email ID: {msg_id}")
             else:
-                print(f"Email deletion error: {error}")
+                print(f"Email archiving error: {error}")
     
     def send_alert_email(self, missing_reports: List[str]):
         """Send alert email for missing reports"""
@@ -534,7 +543,7 @@ class EmailProcessor:
         # Cleanup
         print("\nCleanup")
         for source, msg_id in processed_emails:
-            self.delete_email(msg_id)
+            self.archive_or_delete_email(msg_id)
         
         # Send alert if needed
         if missing_reports:
