@@ -29,8 +29,10 @@ class EmailProcessor:
         
     def _init_gmail(self):
         """Initialize Gmail API service"""
+        # Get access token if provided, otherwise will use refresh token
+        access_token = os.environ.get('GMAIL_ACCESS_TOKEN', '')
+        
         token_data = {
-            'token': os.environ.get('GMAIL_ACCESS_TOKEN'),
             'refresh_token': os.environ['GMAIL_REFRESH_TOKEN'],
             'token_uri': 'https://oauth2.googleapis.com/token',
             'client_id': os.environ['GMAIL_CLIENT_ID'],
@@ -42,11 +44,23 @@ class EmailProcessor:
             ]
         }
         
+        # Only add access token if it exists
+        if access_token:
+            token_data['token'] = access_token
+        
         creds = Credentials.from_authorized_user_info(token_data)
         
-        # Refresh if needed
-        if creds.expired and creds.refresh_token:
-            creds.refresh(Request())
+        # Refresh token to get valid access token
+        if not creds.valid:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"Token refresh error: {e}")
+                print("Ensure refresh token has correct scopes:")
+                print("  - https://www.googleapis.com/auth/gmail.readonly")
+                print("  - https://www.googleapis.com/auth/gmail.modify")
+                print("  - https://www.googleapis.com/auth/gmail.send")
+                raise
         
         return build('gmail', 'v1', credentials=creds)
     
