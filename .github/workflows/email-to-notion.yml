@@ -59,5 +59,8 @@ jobs:
           
           # Alert Configuration
           ALERT_EMAIL: ${{ secrets.ALERT_EMAIL }}
+          
+          # Logging Configuration (set to 'true' for minimal logs in public repos)
+          QUIET_MODE: 'true'
         run: |
           python process_emails.py
