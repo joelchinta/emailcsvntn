@@ -23,10 +23,22 @@ class EmailProcessor:
         self.database_id = os.environ['NOTION_DATABASE_ID']
         self.alert_email = os.environ.get('ALERT_EMAIL')
         
+        # Quiet mode for production (minimal logging for public repos)
+        self.quiet_mode = os.environ.get('QUIET_MODE', 'true').lower() == 'true'
+        
         # Email search queries from environment
         self.email1_query = os.environ.get('EMAIL1_SEARCH_QUERY')
         self.email2_query = os.environ.get('EMAIL2_SEARCH_QUERY')
-        
+    
+    def log(self, message: str, level: str = 'info'):
+        """Log message with minimal detail for public logs"""
+        if self.quiet_mode:
+            # In quiet mode, only log errors and summary
+            if level in ['error', 'summary']:
+                print(message)
+        else:
+            print(message)
+    
     def _init_gmail(self):
         """Initialize Gmail API service"""
         # Get access token if provided, otherwise will use refresh token
@@ -55,11 +67,7 @@ class EmailProcessor:
             try:
                 creds.refresh(Request())
             except Exception as e:
-                print(f"Token refresh error: {e}")
-                print("Ensure refresh token has correct scopes:")
-                print("  - https://www.googleapis.com/auth/gmail.readonly")
-                print("  - https://www.googleapis.com/auth/gmail.modify")
-                print("  - https://www.googleapis.com/auth/gmail.send")
+                self.log(f"Authentication error: {e}", 'error')
                 raise
         
         return build('gmail', 'v1', credentials=creds)
@@ -77,7 +85,7 @@ class EmailProcessor:
             return messages[0]['id'] if messages else None
             
         except HttpError as error:
-            print(f"Email search error: {error}")
+            self.log(f"Email search error", 'error')
             return None
     
     def get_email_details(self, msg_id: str) -> Dict:
@@ -91,7 +99,7 @@ class EmailProcessor:
             return message
             
         except HttpError as error:
-            print(f"Error retrieving email: {error}")
+            self.log(f"Error retrieving email", 'error')
             return {}
     
     def extract_attachment(self, msg_id: str, message: Dict) -> Optional[str]:
@@ -117,7 +125,7 @@ class EmailProcessor:
             return None
             
         except Exception as error:
-            print(f"Attachment extraction error: {error}")
+            self.log(f"Attachment extraction error", 'error')
             return None
     
     def extract_csv_link(self, message: Dict) -> Optional[str]:
@@ -197,7 +205,7 @@ class EmailProcessor:
             return None
             
         except Exception as error:
-            print(f"Link extraction error: {error}")
+            self.log(f"Link extraction error", 'error')
             return None
     
     def download_csv(self, url: str) -> Optional[str]:
@@ -211,14 +219,14 @@ class EmailProcessor:
             
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 403:
-                print(f"CSV download error: Access forbidden (403). URL may have expired or requires authentication.")
+                self.log(f"CSV download error: Access forbidden (link may have expired)", 'error')
             elif e.response.status_code == 404:
-                print(f"CSV download error: File not found (404)")
+                self.log(f"CSV download error: File not found", 'error')
             else:
-                print(f"CSV download error: HTTP {e.response.status_code}")
+                self.log(f"CSV download error: HTTP {e.response.status_code}", 'error')
             return None
         except Exception as error:
-            print(f"CSV download error: {error}")
+            self.log(f"CSV download error", 'error')
             return None
     
     def parse_csv_source1(self, csv_content: str) -> List[Dict]:
@@ -254,7 +262,6 @@ class EmailProcessor:
                 entries.append(entry)
                 
             except Exception as e:
-                print(f"Row parsing error: {e}")
                 continue
         
         return entries
@@ -280,25 +287,42 @@ class EmailProcessor:
         
         for row in reader:
             try:
-                date_str = row.get(date_field, '')
+                date_str = row.get(date_field, '').strip()
+                order_id = row.get(id_field, '').strip()
+                
+                # Skip rows with empty order ID or date (likely total/summary rows)
+                if not order_id or not date_str:
+                    continue
+                
+                # Skip rows where order_id is not a number (like "Total", "Summary", etc)
+                if not order_id.replace('.', '', 1).isdigit():
+                    continue
+                
                 order_date = self._parse_date_with_year(date_str, current_year)
+                
+                # Skip if date parsing returned empty or invalid date
+                if not order_date or order_date.strip() == '':
+                    continue
                 
                 entry = {
                     'source': source_name,
                     'order_amount': float(row.get(amount_field, 0)),
-                    'order_id': row.get(id_field, ''),
+                    'order_id': order_id,
                     'order_date': order_date
                 }
                 entries.append(entry)
                 
             except Exception as e:
-                print(f"Row parsing error: {e}")
                 continue
         
         return entries
     
     def _parse_date(self, date_str: str) -> str:
         """Parse date string to ISO format"""
+        if not date_str or date_str.strip() == '':
+            # Return today's date if empty
+            return datetime.now().strftime('%Y-%m-%d')
+            
         try:
             formats = [
                 '%Y-%m-%d',
@@ -306,19 +330,22 @@ class EmailProcessor:
                 '%d/%m/%Y',
                 '%Y-%m-%d %H:%M:%S',
                 '%m/%d/%Y %H:%M:%S',
+                '%d-%m-%Y',
+                '%Y/%m/%d',
             ]
             
             for fmt in formats:
                 try:
-                    dt = datetime.strptime(date_str, fmt)
+                    dt = datetime.strptime(date_str.strip(), fmt)
                     return dt.strftime('%Y-%m-%d')
                 except ValueError:
                     continue
             
-            return date_str
+            # If no format matches, return today's date
+            return datetime.now().strftime('%Y-%m-%d')
             
         except Exception:
-            return date_str
+            return datetime.now().strftime('%Y-%m-%d')
     
     def _parse_date_with_year(self, date_str: str, year: int) -> str:
         """Parse date string without year and add current year"""
@@ -338,6 +365,7 @@ class EmailProcessor:
                 except ValueError:
                     continue
             
+            # Try with year already
             return self._parse_date(date_str)
             
         except Exception:
@@ -360,12 +388,16 @@ class EmailProcessor:
             return results[0]['id'] if results else None
             
         except Exception as e:
-            print(f"Notion query error: {e}")
             return None
     
     def create_or_update_notion_entry(self, entry: Dict):
         """Create or update entry in Notion database"""
         try:
+            # Skip entries with empty order_id
+            if not entry.get('order_id') or str(entry['order_id']).strip() == '':
+                return
+            
+            # Check if entry exists
             existing_page_id = self.check_notion_entry_exists(entry['order_id'])
             
             # Get additional property names from environment
@@ -402,16 +434,14 @@ class EmailProcessor:
                     page_id=existing_page_id,
                     properties=properties
                 )
-                print(f"Updated entry: {entry['order_id']}")
             else:
                 self.notion.pages.create(
                     parent={"database_id": self.database_id},
                     properties=properties
                 )
-                print(f"Created entry: {entry['order_id']}")
                 
         except Exception as e:
-            print(f"Notion update error: {e}")
+            self.log(f"Notion error", 'error')
     
     def archive_or_delete_email(self, msg_id: str):
         """Archive email from Gmail inbox (or trash as fallback)"""
@@ -422,7 +452,6 @@ class EmailProcessor:
                 id=msg_id,
                 body={'removeLabelIds': ['INBOX']}
             ).execute()
-            print(f"Archived email: {msg_id}")
             
         except HttpError as error:
             # If archive fails, try moving to trash
@@ -432,17 +461,14 @@ class EmailProcessor:
                         userId='me',
                         id=msg_id
                     ).execute()
-                    print(f"Moved email to trash: {msg_id}")
                 except HttpError as trash_error:
-                    print(f"Warning: Cannot archive or trash email. Email will remain in inbox.")
-                    print(f"Email ID: {msg_id}")
+                    self.log(f"Cannot archive or trash email", 'error')
             else:
-                print(f"Email archiving error: {error}")
+                self.log(f"Email archiving error", 'error')
     
     def send_alert_email(self, missing_reports: List[str]):
         """Send alert email for missing reports"""
         if not self.alert_email:
-            print("Alert email not configured, skipping notification")
             return
             
         try:
@@ -464,95 +490,97 @@ class EmailProcessor:
                 body=message
             ).execute()
             
-            print(f"Alert sent for missing: {missing}")
-            
         except HttpError as error:
-            print(f"Alert email error: {error}")
+            self.log(f"Alert email error", 'error')
         except Exception as error:
-            print(f"Alert email error: {error}")
+            self.log(f"Alert email error", 'error')
     
     def process(self):
         """Main processing logic"""
-        print("Starting processing")
+        self.log("Starting processing", 'summary')
         
         missing_reports = []
         processed_emails = []
+        entries_created = 0
         
         # Get source names for reporting
         source1_name = os.environ.get('CSV1_SOURCE_NAME', 'Source1')
         source2_name = os.environ.get('CSV2_SOURCE_NAME', 'Source2')
         
         # Process first email (CSV link in body)
-        print(f"\nProcessing {source1_name}")
+        self.log(f"\nProcessing {source1_name}")
         email1_id = self.search_email(self.email1_query)
         
         if email1_id:
-            print(f"Email found: {email1_id}")
+            self.log(f"Email found")
             
             message = self.get_email_details(email1_id)
             csv_link = self.extract_csv_link(message)
             
             if csv_link:
-                print(f"CSV link found")
+                self.log(f"CSV link found")
                 csv_content = self.download_csv(csv_link)
                 
                 if csv_content:
                     entries = self.parse_csv_source1(csv_content)
-                    print(f"Parsed {len(entries)} entries")
+                    self.log(f"Parsed {len(entries)} entries")
                     
                     for entry in entries:
                         self.create_or_update_notion_entry(entry)
+                        entries_created += 1
                     
                     processed_emails.append((source1_name, email1_id))
                 else:
-                    print("CSV download failed")
+                    self.log("CSV download failed", 'error')
                     missing_reports.append(source1_name)
             else:
-                print("CSV link not found")
+                self.log("CSV link not found", 'error')
                 missing_reports.append(source1_name)
         else:
-            print("Email not found")
+            self.log("Email not found", 'error')
             missing_reports.append(source1_name)
         
         # Process second email (CSV attachment)
-        print(f"\nProcessing {source2_name}")
+        self.log(f"\nProcessing {source2_name}")
         email2_id = self.search_email(self.email2_query)
         
         if email2_id:
-            print(f"Email found: {email2_id}")
+            self.log(f"Email found")
             
             message = self.get_email_details(email2_id)
             csv_content = self.extract_attachment(email2_id, message)
             
             if csv_content:
-                print("CSV attachment extracted")
+                self.log("CSV attachment extracted")
                 entries = self.parse_csv_source2(csv_content)
-                print(f"Parsed {len(entries)} entries")
+                self.log(f"Parsed {len(entries)} entries")
                 
                 for entry in entries:
                     self.create_or_update_notion_entry(entry)
+                    entries_created += 1
                 
                 processed_emails.append((source2_name, email2_id))
             else:
-                print("CSV attachment not found")
+                self.log("CSV attachment not found", 'error')
                 missing_reports.append(source2_name)
         else:
-            print("Email not found")
+            self.log("Email not found", 'error')
             missing_reports.append(source2_name)
         
         # Cleanup
-        print("\nCleanup")
+        self.log("\nCleanup")
         for source, msg_id in processed_emails:
             self.archive_or_delete_email(msg_id)
         
         # Send alert if needed
         if missing_reports:
-            print(f"\nMissing reports: {', '.join(missing_reports)}")
+            self.log(f"\nMissing reports: {', '.join(missing_reports)}", 'error')
             self.send_alert_email(missing_reports)
         
-        print("\nProcessing complete")
-        print(f"Processed: {len(processed_emails)} emails")
-        print(f"Missing: {len(missing_reports)} reports")
+        self.log("\nProcessing complete", 'summary')
+        self.log(f"Processed: {len(processed_emails)} emails", 'summary')
+        self.log(f"Entries synced: {entries_created}", 'summary')
+        self.log(f"Missing: {len(missing_reports)} reports", 'summary')
 
 
 if __name__ == "__main__":
@@ -561,7 +589,7 @@ if __name__ == "__main__":
         processor.process()
         
     except Exception as e:
-        print(f"Fatal error: {e}")
+        print(f"Fatal error occurred")
         import traceback
         traceback.print_exc()
         exit(1)
