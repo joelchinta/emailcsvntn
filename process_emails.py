@@ -298,6 +298,11 @@ class EmailProcessor:
                 if not order_id.replace('.', '', 1).isdigit():
                     continue
                 
+                # Additional check: Skip rows where the first column contains "Total" or "Summary" (case-insensitive)
+                first_col_value = list(row.values())[0].strip().lower() if row.values() else ''
+                if first_col_value in ['total', 'summary', 'subtotal', 'grand total']:
+                    continue
+                
                 order_date = self._parse_date_with_year(date_str, current_year)
                 
                 # Skip if date parsing returned empty or invalid date
